@@ -7,6 +7,9 @@ use Omniphx\Forrest\Exceptions\MissingTokenException;
 use Omniphx\Forrest\Exceptions\MissingResourceException;
 use Omniphx\Forrest\Exceptions\MissingVersionException;
 use Omniphx\Forrest\Exceptions\SalesforceException;
+use Omniphx\Forrest\Providers\Laravel\LaravelSession;
+use Omniphx\Forrest\Providers\Laravel\LaravelCache;
+use Omniphx\Forrest\Interfaces\StorageInterface;
 use Lester\EloquentSalesForce\Database\SOQLBatch;
 use Illuminate\Support\Str;
 use Illuminate\Support\Arr;
@@ -49,6 +52,27 @@ class SObjects
             $this->log('SOQL Bulk Update', $results);
 		}
 	}
+	
+	protected function getStorage()
+	{
+	    $storageType = config('eloquent_sf.forrest.storage.type');
+	    switch ($storageType) {
+	        case 'session':
+	            $storage = new LaravelSession(app('config'), app('request')->session());
+	        case 'cache':
+	            $storage = new LaravelCache(app('config'), app('cache')->store());
+	        default:
+	            if($storageType !== null && class_exists($storageType) && new $storageType() instanceof StorageInterface) {
+	                app()->singleton($storageType, function () use($storageType) {
+	                    return new $storageType();
+	                });
+	                $storage = app($storageType);
+	            } else {
+	                $storage = new LaravelSession(app('config'), app('request')->session());
+	            }
+	    }
+	    return $storage;
+	}
 
 	/**
 	 * Authenticates Forrest
@@ -56,8 +80,8 @@ class SObjects
 	public function authenticate()
 	{
         return $this->saleforceAttempt(function() {
-		    $storage = ucwords(config('eloquent_sf.forrest.storage.type'));
-		    if (!$storage::has(config('eloquent_sf.forrest.storage.path') . 'token')) {
+            $storage = $this->getStorage();
+		    if (!$storage->has('token')) {
 			    if (config('eloquent_sf.forrest.authentication') == 'WebServer') return Forrest::authenticate();
                 else {
                     $this->saleforceAttempt(function() {
@@ -65,8 +89,8 @@ class SObjects
                     });
                 }
             }
-		    $tokens = (object) decrypt($storage::get(config('eloquent_sf.forrest.storage.path') . 'token'));
-		    Session::put('eloquent_sf_instance_url', $tokens->instance_url);
+		    $tokens = (object) decrypt($storage->get('token'));
+		    $storage->put('eloquent_sf_instance_url', $tokens->instance_url);
 		    return $tokens;
         });
 	}
@@ -78,7 +102,8 @@ class SObjects
 
 	public function instanceUrl()
 	{
-		return Session::get('eloquent_sf_instance_url');
+	    $storage = $this->getStorage();
+	    return $storage->get('eloquent_sf_instance_url');
 	}
 
     public function callback()
